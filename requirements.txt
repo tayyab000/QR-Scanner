@@ -1,0 +1,8 @@
+streamlit
+pypdfium2
+zxing-cpp
+opencv-python-headless
+pytesseract
+numpy
+pandas
+openpyxl
