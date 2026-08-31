@@ -8,7 +8,7 @@ import pytesseract
 import streamlit as st
 import zxingcpp
 
-# Page Layout & Header Config
+# Page Setup
 st.set_page_config(
     page_title="PDF QR & App Number Scanner",
     page_icon="📑",
@@ -49,37 +49,12 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.markdown('<div class="main-title">📄 Document Data & QR Extractor</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub-title">Upload multi-page property PDFs to extract Application Numbers & QR Codes automatically</div>', unsafe_allow_html=True)
+st.markdown('<div class="sub-title">High-Accuracy Document OCR & Multi-Angle QR Extraction</div>', unsafe_allow_html=True)
 
-# ----------------- Extraction Logic -----------------
+# ----------------- Core Extraction Engine -----------------
 
-def extract_app_number(cv_img):
-    """Crops the top-right quadrant where App. No is located and extracts via OCR + Regex."""
-    h, w = cv_img.shape[:2]
-    # Target top-right 30% area
-    top_right = cv_img[0:int(h * 0.30), int(w * 0.50):w]
-    
-    # Preprocessing for OCR
-    gray = cv2.cvtColor(top_right, cv2.COLOR_BGR2GRAY)
-    gray = cv2.resize(gray, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
-    thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
-    
-    text = pytesseract.image_to_string(thresh, config="--psm 6")
-    
-    # Match standard alphanumeric formats (e.g., KP1026144, LM0052577, ZA8028190)
-    match = re.search(r'\b([A-Z]{2,3}\d{6,8})\b', text)
-    if match:
-        return match.group(1)
-    
-    # Fallback broader pattern search
-    fallback_match = re.search(r'[A-Z0-9]{7,10}', text)
-    if fallback_match:
-        return fallback_match.group(0)
-        
-    return "Not Detected"
-
-def try_decode(img):
-    """Multi-angle Zebra Crossing QR engine."""
+def try_zxing(img):
+    """Zebra Crossing scan across all rotations (0, 90, 180, 270) with auto-downscale & inversion."""
     try:
         results = zxingcpp.read_barcodes(
             img,
@@ -95,42 +70,78 @@ def try_decode(img):
         pass
     return None
 
-def scan_qr_code(cv_img):
-    """Robust multi-pass QR decoder targeting top-left quadrant."""
-    # Pass 1: Direct Full Image
-    val = try_decode(cv_img)
-    if val:
-        return val
+def scan_qr_code_extreme(cv_img):
+    """Ultra-resilient multi-pass QR decoder."""
+    # 1. Direct Full Page Scan
+    res = try_zxing(cv_img)
+    if res:
+        return res
 
-    # Pass 2: Crop Top-Left 40% area
+    # 2. Focus on Top-Left Area (Expanded to 55% H x 60% W)
     h, w = cv_img.shape[:2]
-    top_left = cv_img[0:int(h * 0.40), 0:int(w * 0.50)]
-    val = try_decode(top_left)
-    if val:
-        return val
+    top_left = cv_img[0:int(h * 0.55), 0:int(w * 0.60)]
+    res = try_zxing(top_left)
+    if res:
+        return res
 
-    # Pass 3: Grayscale + CLAHE Contrast Boost
+    # 3. Grayscale + CLAHE (Local Contrast Enhancement for faded/shadowed scans)
     gray = cv2.cvtColor(top_left, cv2.COLOR_BGR2GRAY)
-    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
-    val = try_decode(clahe.apply(gray))
-    if val:
-        return val
+    clahe = cv2.createCLAHE(clipLimit=4.0, tileGridSize=(8, 8))
+    enhanced = clahe.apply(gray)
+    res = try_zxing(enhanced)
+    if res:
+        return res
 
-    # Pass 4: Adaptive Thresholding
-    thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 10)
-    val = try_decode(thresh)
-    if val:
-        return val
+    # 4. Otsu Adaptive Binarization
+    _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    res = try_zxing(thresh)
+    if res:
+        return res
+
+    # 5. Adaptive Thresholding
+    adapt_thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 11)
+    res = try_zxing(adapt_thresh)
+    if res:
+        return res
+
+    # 6. Morphological Closing (Connects broken QR module dots)
+    kernel = np.ones((2, 2), np.uint8)
+    closed = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
+    res = try_zxing(closed)
+    if res:
+        return res
 
     return "Missing / No QR Code"
 
+def extract_app_number(cv_img):
+    """Target top-right 40% area to read App. No."""
+    h, w = cv_img.shape[:2]
+    top_right = cv_img[0:int(h * 0.35), int(w * 0.45):w]
+    
+    gray = cv2.cvtColor(top_right, cv2.COLOR_BGR2GRAY)
+    gray = cv2.resize(gray, None, fx=2.5, fy=2.5, interpolation=cv2.INTER_CUBIC)
+    thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+    
+    text = pytesseract.image_to_string(thresh, config="--psm 6")
+    
+    # Priority Match: Typical Kingdom Valley formats (e.g. KP1026144, LM0052577, ZA8028190)
+    match = re.search(r'\b([A-Z]{2,3}\d{6,8})\b', text)
+    if match:
+        return match.group(1)
+        
+    fallback_match = re.search(r'[A-Z0-9]{7,10}', text)
+    if fallback_match:
+        return fallback_match.group(0)
+        
+    return "Not Detected"
+
 # ----------------- UI Workflow -----------------
 
-uploaded_file = st.file_uploader("Select PDF File", type=["pdf"])
+uploaded_file = st.file_uploader("Upload Multi-Page PDF", type=["pdf"])
 
 if uploaded_file is not None:
-    if st.button("🚀 Start Deep Analysis"):
-        with st.spinner("Processing pages and reading records..."):
+    if st.button("🚀 Analyze All Pages"):
+        with st.spinner("Processing pages with multi-pass recognition..."):
             pdf_bytes = uploaded_file.read()
             pdf = pdfium.PdfDocument(pdf_bytes)
             total_pages = len(pdf)
@@ -140,16 +151,16 @@ if uploaded_file is not None:
             results = []
 
             for idx in range(total_pages):
-                status_text.text(f"Scanning Page {idx + 1} of {total_pages}...")
+                status_text.text(f"Analyzing Page {idx + 1} of {total_pages}...")
                 page = pdf[idx]
                 
-                # Render at 300 DPI
-                bitmap = page.render(scale=3.5)
+                # Render at high resolution (scale 4.0 = ~300 DPI for precision)
+                bitmap = page.render(scale=4.0)
                 pil_img = bitmap.to_pil()
                 cv_img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
 
                 app_no = extract_app_number(cv_img)
-                qr_data = scan_qr_code(cv_img)
+                qr_data = scan_qr_code_extreme(cv_img)
 
                 results.append({
                     "Page No": idx + 1,
@@ -165,13 +176,12 @@ if uploaded_file is not None:
             st.success("Analysis Complete!")
             st.dataframe(df, use_container_width=True)
 
-            # Export to Excel
             excel_buffer = io.BytesIO()
             df.to_excel(excel_buffer, index=False, engine='openpyxl')
             excel_buffer.seek(0)
 
             st.download_button(
-                label="📥 Download Structured Excel (.xlsx)",
+                label="📥 Download Excel File (.xlsx)",
                 data=excel_buffer,
                 file_name="Extracted_Property_Records.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
